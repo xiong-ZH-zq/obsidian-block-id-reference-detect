@@ -22,10 +22,12 @@ interface UnusedBlockId {
 
 interface UnusedBlockIdRemoverSettings {
     excludedExtensions: string[];
+    debounceDelay: number;
 }
 
 const DEFAULT_SETTINGS: Partial<UnusedBlockIdRemoverSettings> = {
-    excludedExtensions: ['.excalidraw.md']
+    excludedExtensions: ['.excalidraw.md'],
+    debounceDelay: 50
 }
 
 class UnusedBlockIdRemoverSettingTab extends PluginSettingTab {
@@ -51,6 +53,22 @@ class UnusedBlockIdRemoverSettingTab extends PluginSettingTab {
                     .onChange(async (value) => {
                         this.plugin.settings.excludedExtensions = value.split(',').map(ext => ext.trim());
                         await this.plugin.saveSettings();
+                    });
+            });
+
+        new Setting(containerEl)
+            .setName('Real-time update debounce')
+            .setDesc('Delay in milliseconds before updating reference counts after file changes. Set to 0 for instant updates.')
+            .addTextArea((text) => {
+                text
+                    .setPlaceholder('50')
+                    .setValue(String(this.plugin.settings.debounceDelay))
+                    .onChange(async (value) => {
+                        const delay = parseInt(value, 10);
+                        if (!isNaN(delay) && delay >= 0) {
+                            this.plugin.settings.debounceDelay = delay;
+                            await this.plugin.saveSettings();
+                        }
                     });
             });
     }
@@ -106,6 +124,9 @@ class ConfirmationModal extends Modal {
 export default class UnusedBlockIdRemover extends Plugin {
     settings: UnusedBlockIdRemoverSettings;
     private blockIdReferences: Map<string, BlockIdReference> = new Map();
+    private blockIdsByFile: Map<string, Set<string>> = new Map();
+    private referenceSources: Map<string, Set<string>> = new Map();
+    private modifyDebounceTimer: number | null = null;
 
     async onload() {
         await this.loadSettings();
@@ -141,7 +162,40 @@ export default class UnusedBlockIdRemover extends Plugin {
             callback: () => this.findUnusedBlockIds(),
         });
 
+        this.registerEvent(
+            this.app.vault.on('modify', (file) => {
+                if (file instanceof TFile && file.extension === 'md') {
+                    if (this.modifyDebounceTimer !== null) {
+                        window.clearTimeout(this.modifyDebounceTimer);
+                    }
+                    const delay = this.settings.debounceDelay;
+                    if (delay === 0) {
+                        this.app.vault.cachedRead(file).then((content) => {
+                            this.updateFileReferences(file, content);
+                        });
+                    } else {
+                        this.modifyDebounceTimer = window.setTimeout(() => {
+                            this.modifyDebounceTimer = null;
+                            this.app.vault.cachedRead(file).then((content) => {
+                                this.updateFileReferences(file, content);
+                            });
+                        }, delay);
+                    }
+                }
+            })
+        );
+
+        this.registerEvent(
+            this.app.vault.on('delete', (file) => {
+                if (file instanceof TFile) {
+                    this.clearFileReferences(file.path);
+                }
+            })
+        );
+
         this.registerBlockIdExtension();
+
+        this.scanVault();
     }
 
     onunload() { }
@@ -158,33 +212,41 @@ export default class UnusedBlockIdRemover extends Plugin {
         await this.saveData(this.settings);
     }
 
+    async scanVault(): Promise<UnusedBlockId[]> {
+        const excludedExtensions = this.settings.excludedExtensions.filter(ext => ext);
+        const files = this.app.vault.getMarkdownFiles().filter(file => {
+            return excludedExtensions.length === 0 || !excludedExtensions.some(ext => file.path.endsWith(ext));
+        });
+
+        const blockIds = new Map<string, BlockIdInfo[]>();
+        const blockIdReferences = new Map<string, BlockIdReference>();
+
+        this.blockIdsByFile.clear();
+        this.referenceSources.clear();
+
+        for (const file of files) {
+            const content = await this.app.vault.cachedRead(file);
+            this.collectBlockIdsAndReferences(content, file.path, blockIds, blockIdReferences);
+        }
+
+        const unusedBlockIds = Array.from(blockIds.entries())
+            .flatMap(([key, blockIdArray]) => {
+                return blockIdArray.filter(item => {
+                    const referenceKey = `${item.file}#${item.id}`;
+                    return !blockIdReferences.has(referenceKey);
+                });
+            });
+
+        this.blockIdReferences = blockIdReferences;
+
+        return unusedBlockIds;
+    }
+
     async findUnusedBlockIds() {
         const loadingNotice = new Notice('Searching for unused block IDs...', 0);
 
         try {
-            const excludedExtensions = this.settings.excludedExtensions.filter(ext => ext);
-            const files = this.app.vault.getMarkdownFiles().filter(file => {
-                return excludedExtensions.length === 0 || !excludedExtensions.some(ext => file.path.endsWith(ext));
-            });
-
-            const blockIds = new Map<string, BlockIdInfo[]>();
-            const blockIdReferences = new Map<string, BlockIdReference>();
-
-            for (const file of files) {
-                const content = await this.app.vault.cachedRead(file);
-                this.collectBlockIdsAndReferences(content, file.path, blockIds, blockIdReferences);
-            }
-
-            const unusedBlockIds = Array.from(blockIds.entries())
-                .flatMap(([key, blockIdArray]) => {
-                    return blockIdArray.filter(item => {
-                        const referenceKey = `${item.file}#${item.id}`;
-                        return !blockIdReferences.has(referenceKey);
-                    });
-                });
-
-            this.blockIdReferences = blockIdReferences;
-
+            const unusedBlockIds = await this.scanVault();
             loadingNotice.hide();
 
             if (unusedBlockIds.length === 0) {
@@ -232,6 +294,11 @@ export default class UnusedBlockIdRemover extends Plugin {
                         referencingFiles: [filePath]
                     });
                 }
+
+                if (!this.referenceSources.has(blockRefKey)) {
+                    this.referenceSources.set(blockRefKey, new Set());
+                }
+                this.referenceSources.get(blockRefKey)!.add(filePath);
             }
         };
 
@@ -251,6 +318,11 @@ export default class UnusedBlockIdRemover extends Plugin {
                     line: line.trim(),
                     lineNumber: index
                 });
+
+                if (!this.blockIdsByFile.has(filePath)) {
+                    this.blockIdsByFile.set(filePath, new Set());
+                }
+                this.blockIdsByFile.get(filePath)!.add(blockId);
             }
 
             let refMatch;
@@ -269,6 +341,36 @@ export default class UnusedBlockIdRemover extends Plugin {
                 processRef(refBlockId, refFile);
             }
         });
+    }
+
+    clearFileReferences(filePath: string): void {
+        const blockIds = this.blockIdsByFile.get(filePath);
+        if (blockIds) {
+            for (const blockId of blockIds) {
+                const key = `${filePath}#${blockId}`;
+                this.blockIdReferences.delete(key);
+            }
+            this.blockIdsByFile.delete(filePath);
+        }
+
+        for (const [key, sources] of this.referenceSources.entries()) {
+            if (sources.has(filePath)) {
+                sources.delete(filePath);
+                const refInfo = this.blockIdReferences.get(key);
+                if (refInfo) {
+                    refInfo.count = sources.size;
+                    refInfo.referencingFiles = Array.from(sources);
+                }
+                if (sources.size === 0) {
+                    this.referenceSources.delete(key);
+                }
+            }
+        }
+    }
+
+    updateFileReferences(file: TFile, newContent: string): void {
+        this.clearFileReferences(file.path);
+        this.collectBlockIdsAndReferences(newContent, file.path, new Map(), this.blockIdReferences);
     }
 
     isValidBlockId(id: string): boolean {
