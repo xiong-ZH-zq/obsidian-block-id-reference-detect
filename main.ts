@@ -113,24 +113,21 @@ export default class UnusedBlockIdRemover extends Plugin {
         const styleEl = document.createElement('style');
         styleEl.id = 'block-id-ref-styles';
         styleEl.textContent = `
-            .block-id-ref-count {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                min-width: 18px;
-                height: 18px;
-                padding: 0 4px;
-                margin-left: 4px;
-                font-size: 12px;
-                font-weight: 500;
-                color: var(--text-muted);
-                background-color: var(--background-secondary);
-                border-radius: 4px;
-                cursor: pointer;
-                transition: background-color 0.15s ease;
+            .cm-blockid-badge {
+                visibility: hidden;
             }
-            .block-id-ref-count:hover {
-                background-color: var(--background-modifier-hover);
+            .cm-blockid-badge::before {
+                content: "[" attr(data-count) "]";
+                visibility: visible;
+                font-size: 12px;
+                color: #0093ff;
+            }
+            .cm-blockid-badge::first-letter {
+                visibility: visible;
+                opacity: 0.5;
+            }
+            .cm-activeLine .cm-blockid-badge {
+                visibility: visible;
             }
         `;
         document.head.appendChild(styleEl);
@@ -369,6 +366,7 @@ export default class UnusedBlockIdRemover extends Plugin {
                 const filePath = currentFile.path;
                 const doc = this.view.state.doc;
                 const cursorPos = this.view.state.selection.main.head;
+                const activeLineNumber = doc.lineAt(cursorPos).number;
 
                 for (let i = 1; i <= doc.lines; i++) {
                     const line = doc.line(i);
@@ -380,20 +378,19 @@ export default class UnusedBlockIdRemover extends Plugin {
                     if (match && plugin.isValidBlockId(match[1])) {
                         const blockId = match[1];
                         const refInfo = plugin.getBlockIdReference(filePath, blockId);
-                        const isCursorOnLine = line.from <= cursorPos && cursorPos <= line.to;
+                        const isCursorOnLine = i === activeLineNumber;
+                        const hasRefs = refInfo && refInfo.count > 0;
 
-                        if (refInfo && refInfo.count > 0 && !isCursorOnLine) {
-                            const from = line.to - match[0].length;
+                        const blockIdStart = line.to - match[0].length;
 
+                        if (hasRefs && !isCursorOnLine) {
                             decorations.push(
                                 Decoration.mark({
-                                    class: 'block-id-ref-count',
+                                    class: 'cm-blockid-badge',
                                     attributes: {
-                                        'data-block-id': blockId,
-                                        'data-count': String(refInfo.count),
-                                        'data-files': refInfo.referencingFiles.join(',')
+                                        'data-count': String(refInfo.count)
                                     }
-                                }).range(from)
+                                }).range(blockIdStart, line.to)
                             );
                         }
                     }
