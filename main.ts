@@ -1,5 +1,5 @@
-import { App, Plugin, TFile, Notice, Modal, Setting, PluginSettingTab, Editor, EditorPosition } from 'obsidian';
-import { ViewPlugin, Decoration, EditorView, WidgetType } from '@codemirror/view';
+import { App, Plugin, TFile, Notice, Modal, Setting, PluginSettingTab } from 'obsidian';
+import { ViewPlugin, Decoration, EditorView, DecorationSet } from '@codemirror/view';
 
 interface BlockIdInfo {
     id: string;
@@ -27,53 +27,6 @@ interface UnusedBlockIdRemoverSettings {
 const DEFAULT_SETTINGS: Partial<UnusedBlockIdRemoverSettings> = {
     excludedExtensions: ['.excalidraw.md']
 }
-
-const BLOCK_ID_CSS = `
-.block-id-ref-count {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 4px;
-    margin-left: 4px;
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--text-muted);
-    background-color: var(--background-secondary);
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background-color 0.15s ease;
-}
-.block-id-ref-count:hover {
-    background-color: var(--background-modifier-hover);
-}
-.block-id-tooltip {
-    position: fixed;
-    padding: 8px 12px;
-    background-color: var(--background-primary);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    font-size: 13px;
-    max-width: 300px;
-    z-index: 1000;
-}
-.block-id-tooltip-title {
-    font-weight: 600;
-    margin-bottom: 6px;
-    color: var(--text-primary);
-}
-.block-id-tooltip-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-}
-.block-id-tooltip-list li {
-    padding: 2px 0;
-    color: var(--text-secondary);
-}
-`;
 
 class UnusedBlockIdRemoverSettingTab extends PluginSettingTab {
     plugin: UnusedBlockIdRemover;
@@ -158,7 +111,28 @@ export default class UnusedBlockIdRemover extends Plugin {
         await this.loadSettings();
 
         const styleEl = document.createElement('style');
-        styleEl.textContent = BLOCK_ID_CSS;
+        styleEl.id = 'block-id-ref-styles';
+        styleEl.textContent = `
+            .block-id-ref-count {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-width: 18px;
+                height: 18px;
+                padding: 0 4px;
+                margin-left: 4px;
+                font-size: 12px;
+                font-weight: 500;
+                color: var(--text-muted);
+                background-color: var(--background-secondary);
+                border-radius: 4px;
+                cursor: pointer;
+                transition: background-color 0.15s ease;
+            }
+            .block-id-ref-count:hover {
+                background-color: var(--background-modifier-hover);
+            }
+        `;
         document.head.appendChild(styleEl);
         this.register(() => styleEl.remove());
 
@@ -170,7 +144,7 @@ export default class UnusedBlockIdRemover extends Plugin {
             callback: () => this.findUnusedBlockIds(),
         });
 
-        this.registerEditorExtension();
+        this.registerBlockIdExtension();
     }
 
     onunload() { }
@@ -196,18 +170,14 @@ export default class UnusedBlockIdRemover extends Plugin {
                 return excludedExtensions.length === 0 || !excludedExtensions.some(ext => file.path.endsWith(ext));
             });
 
-            // Map to store block IDs, keyed by file path + block ID
             const blockIds = new Map<string, BlockIdInfo[]>();
-            // Map to store block ID reference counts and referencing files
             const blockIdReferences = new Map<string, BlockIdReference>();
 
-            // Collect block IDs and references
             for (const file of files) {
                 const content = await this.app.vault.cachedRead(file);
                 this.collectBlockIdsAndReferences(content, file.path, blockIds, blockIdReferences);
             }
 
-            // Identify unused block IDs by comparing blockIds and blockIdReferences
             const unusedBlockIds = Array.from(blockIds.entries())
                 .flatMap(([key, blockIdArray]) => {
                     return blockIdArray.filter(item => {
@@ -215,17 +185,14 @@ export default class UnusedBlockIdRemover extends Plugin {
                         return !blockIdReferences.has(referenceKey);
                     });
                 });
-            
-            // Store block ID references for display purposes
+
             this.blockIdReferences = blockIdReferences;
 
             loadingNotice.hide();
 
-            // If no unused block IDs found, show notice
             if (unusedBlockIds.length === 0) {
                 new Notice('No unused block IDs found.');
             } else {
-                // If unused block IDs are found, show the confirmation modal
                 new ConfirmationModal(this, unusedBlockIds).open();
             }
         } catch (error) {
@@ -241,22 +208,46 @@ export default class UnusedBlockIdRemover extends Plugin {
         blockIdReferences: Map<string, BlockIdReference>
     ) {
         const lines = content.split('\n');
-        const blockIdRegex = /(?:\s|^)\^([\w-]+)$/;  // Matches block IDs like ^blockID
-        const blockIdRefRegex = /\[\[(.*?)#\^([\w-]+)\s*(\|.*?)?\]\]/g;  // Updated to handle spaces around |
+        const blockIdRegex = /(?:\s|^)\^([\w-]+)$/;
+
+        const wikilinkRefRegex = /\[\[(.*?)#\^([\w-]+)(?:\|([^\]]*?))?\]\]/g;
+        const markdownRefRegex = /\[([^\]]*?)\]\(([^)#]*?)#\^([\w-]+)(?:\|([^)]*?))?\)/g;
+
+        const processRef = (refBlockId: string, refFile: string) => {
+            if (!this.isValidBlockId(refBlockId)) return;
+            let resolvedFilePath: string | undefined;
+
+            if (refFile === '' || refFile === undefined) {
+                resolvedFilePath = filePath;
+            } else {
+                resolvedFilePath = this.app.metadataCache.getFirstLinkpathDest(refFile, filePath)?.path;
+            }
+
+            if (resolvedFilePath) {
+                const blockRefKey = `${resolvedFilePath}#${refBlockId}`;
+                const existing = blockIdReferences.get(blockRefKey);
+                if (existing) {
+                    existing.count++;
+                    existing.referencingFiles.push(filePath);
+                } else {
+                    blockIdReferences.set(blockRefKey, {
+                        count: 1,
+                        referencingFiles: [filePath]
+                    });
+                }
+            }
+        };
 
         lines.forEach((line, index) => {
-            // Match block IDs at the end of the line, e.g., ^blockID
             const match = line.match(blockIdRegex);
             if (match && this.isValidBlockId(match[1])) {
                 const blockId = match[1];
-                const blockIdKey = `${filePath}#${blockId}`;  // Create a unique key for block ID + file
+                const blockIdKey = `${filePath}#${blockId}`;
 
-                // Check if the blockId already exists in the map, and if so, append to the array
                 if (!blockIds.has(blockIdKey)) {
-                    blockIds.set(blockIdKey, []);  // Initialize an empty array for the blockId if not already present
+                    blockIds.set(blockIdKey, []);
                 }
 
-                // Push the new occurrence of this block ID to the array
                 blockIds.get(blockIdKey)?.push({
                     id: blockId,
                     file: filePath,
@@ -265,23 +256,20 @@ export default class UnusedBlockIdRemover extends Plugin {
                 });
             }
 
-            // Match block references, e.g., [[filename#^blockID | optional text]]
             let refMatch;
-            while ((refMatch = blockIdRefRegex.exec(line)) !== null) {
-                const refFilePath = this.app.metadataCache.getFirstLinkpathDest(refMatch[1], filePath)?.path;  // Resolve the full path for the referenced file
-                if (refFilePath) {
-                    const blockRefKey = `${refFilePath}#${refMatch[2]}`;  // Create a unique key for the reference
-                    const existing = blockIdReferences.get(blockRefKey);
-                    if (existing) {
-                        existing.count++;
-                        existing.referencingFiles.push(filePath);
-                    } else {
-                        blockIdReferences.set(blockRefKey, {
-                            count: 1,
-                            referencingFiles: [filePath]
-                        });
-                    }
-                }
+
+            wikilinkRefRegex.lastIndex = 0;
+            while ((refMatch = wikilinkRefRegex.exec(line)) !== null) {
+                const refFile = refMatch[1] || '';
+                const refBlockId = refMatch[2];
+                processRef(refBlockId, refFile);
+            }
+
+            markdownRefRegex.lastIndex = 0;
+            while ((refMatch = markdownRefRegex.exec(line)) !== null) {
+                const refBlockId = refMatch[3];
+                const refFile = refMatch[2] || '';
+                processRef(refBlockId, refFile);
             }
         });
     }
@@ -294,7 +282,6 @@ export default class UnusedBlockIdRemover extends Plugin {
         const loadingNotice = new Notice('Deleting unused block IDs...', 0);
         let totalRemoved = 0;
 
-        // Group block IDs by file for efficient processing
         const blockIdsByFile = unusedBlockIds.reduce((acc, item) => {
             if (!acc[item.file]) {
                 acc[item.file] = [];
@@ -304,29 +291,26 @@ export default class UnusedBlockIdRemover extends Plugin {
         }, {} as Record<string, UnusedBlockId[]>);
 
         try {
-            // Process each file one at a time
             for (const [filePath, blockIds] of Object.entries(blockIdsByFile)) {
                 const file = this.app.vault.getAbstractFileByPath(filePath);
                 if (file instanceof TFile) {
-                    // Use async processing with a single read and write per file
                     await this.app.vault.process(file, (content) => {
                         const lines = content.split('\n');
                         let fileChanged = false;
 
-                        // Iterate over block IDs for this file
                         blockIds.forEach(blockId => {
                             const lineIndex = blockId.lineNumber;
                             if (lineIndex >= 0 && lineIndex < lines.length) {
-                                const blockIdRegex = new RegExp(`\\s*\\^${blockId.id}$`);  // Target only block ID at end of line
+                                const blockIdRegex = new RegExp(`\\s*\\^${blockId.id}$`);
                                 if (blockIdRegex.test(lines[lineIndex])) {
-                                    lines[lineIndex] = lines[lineIndex].replace(blockIdRegex, '');  // Remove the block ID
+                                    lines[lineIndex] = lines[lineIndex].replace(blockIdRegex, '');
                                     totalRemoved++;
                                     fileChanged = true;
                                 }
                             }
                         });
 
-                        return fileChanged ? lines.join('\n') : content;  // Only save if the file was changed
+                        return fileChanged ? lines.join('\n') : content;
                     });
                 }
             }
@@ -358,148 +342,70 @@ export default class UnusedBlockIdRemover extends Plugin {
         return this.blockIdReferences;
     }
 
-    registerEditorExtension(): void {
-        // @ts-ignore - registerEditorExtension accepts Extension but types may be outdated
-        this.registerEditorExtension(createBlockIdExtension(this));
-    }
-}
+    registerBlockIdExtension(): void {
+        const plugin = this;
+        const { ViewPlugin, Decoration, EditorView } = require('@codemirror/view');
 
-function createBlockIdExtension(plugin: UnusedBlockIdRemover) {
-    const blockIdRegex = /(?:\s|^)\^([\w-]+)$/g;
-    
-    return ViewPlugin.fromClass(class {
-        decorations: any;
-        view: EditorView;
-        
-        constructor(view: EditorView) {
-            this.view = view;
-            this.decorations = this.buildDecorations();
-        }
-        
-        update() {
-            this.decorations = this.buildDecorations();
-        }
-        
-        buildDecorations() {
-            const decorations: any[] = [];
-            const currentFile = plugin.app.workspace.getActiveFile();
-            if (!currentFile) return Decoration.none;
-            
-            const filePath = currentFile.path;
-            const doc = this.view.state.doc;
-            const cursorPos = this.view.state.selection.main.head;
-            
-            for (let i = 1; i <= doc.lines; i++) {
-                const line = doc.line(i);
-                const lineText = line.text;
-                
-                blockIdRegex.lastIndex = 0;
-                const match = blockIdRegex.exec(lineText);
-                
-                if (match) {
-                    const blockId = match[1];
-                    const refInfo = plugin.getBlockIdReference(filePath, blockId);
-                    const isCursorOnLine = line.from <= cursorPos && cursorPos <= line.to;
-                    
-                    if (refInfo && refInfo.count > 0 && !isCursorOnLine) {
-                        const widget = new BlockIdCountWidget(
-                            blockId,
-                            refInfo.count,
-                            refInfo.referencingFiles,
-                            plugin
-                        );
-                        decorations.push(Decoration.widget({
-                            widget,
-                            side: 1
-                        }).range(line.to));
+        const blockIdRegex = /(?:\s|^)\^([\w-]+)$/g;
+
+        const blockIdPlugin = ViewPlugin.fromClass(class {
+            decorations: DecorationSet;
+            view: EditorView;
+
+            constructor(view: EditorView) {
+                this.view = view;
+                this.decorations = this.buildDecorations();
+            }
+
+            update() {
+                this.decorations = this.buildDecorations();
+            }
+
+            buildDecorations(): DecorationSet {
+                const decorations: any[] = [];
+                const currentFile = plugin.app.workspace.getActiveFile();
+                if (!currentFile) return Decoration.none;
+
+                const filePath = currentFile.path;
+                const doc = this.view.state.doc;
+                const cursorPos = this.view.state.selection.main.head;
+
+                for (let i = 1; i <= doc.lines; i++) {
+                    const line = doc.line(i);
+                    const lineText = line.text;
+
+                    blockIdRegex.lastIndex = 0;
+                    const match = blockIdRegex.exec(lineText);
+
+                    if (match && plugin.isValidBlockId(match[1])) {
+                        const blockId = match[1];
+                        const refInfo = plugin.getBlockIdReference(filePath, blockId);
+                        const isCursorOnLine = line.from <= cursorPos && cursorPos <= line.to;
+
+                        if (refInfo && refInfo.count > 0 && !isCursorOnLine) {
+                            const from = line.to - match[0].length;
+
+                            decorations.push(
+                                Decoration.mark({
+                                    class: 'block-id-ref-count',
+                                    attributes: {
+                                        'data-block-id': blockId,
+                                        'data-count': String(refInfo.count),
+                                        'data-files': refInfo.referencingFiles.join(',')
+                                    }
+                                }).range(from)
+                            );
+                        }
                     }
                 }
-            }
-            
-            return Decoration.set(decorations);
-        }
-    }, {
-        decorations: v => v.decorations
-    });
-}
 
-class BlockIdCountWidget extends WidgetType {
-    blockId: string;
-    count: number;
-    referencingFiles: string[];
-    plugin: UnusedBlockIdRemover;
-    
-    constructor(blockId: string, count: number, referencingFiles: string[], plugin: UnusedBlockIdRemover) {
-        super();
-        this.blockId = blockId;
-        this.count = count;
-        this.referencingFiles = referencingFiles;
-        this.plugin = plugin;
-    }
-    
-    toDOM(): HTMLElement {
-        const container = document.createElement('span');
-        container.className = 'block-id-container has-refs';
-        
-        const countBox = document.createElement('span');
-        countBox.className = 'block-id-ref-count';
-        countBox.textContent = String(this.count);
-        countBox.setAttribute('data-block-id', this.blockId);
-        countBox.setAttribute('data-files', this.referencingFiles.join(','));
-        
-        countBox.addEventListener('mouseenter', (e) => {
-            if (e.ctrlKey) {
-                this.showTooltip(e.target as HTMLElement);
+                return Decoration.set(decorations);
             }
+        }, {
+            decorations: (v: any) => v.decorations
         });
-        
-        countBox.addEventListener('mouseleave', () => {
-            this.hideTooltip();
-        });
-        
-        countBox.addEventListener('click', (e) => {
-            if (e.ctrlKey) {
-                e.preventDefault();
-                this.showTooltip(e.target as HTMLElement);
-            }
-        });
-        
-        container.appendChild(countBox);
-        return container;
-    }
-    
-    private tooltipEl: HTMLElement | null = null;
-    
-    showTooltip(target: HTMLElement) {
-        this.hideTooltip();
-        
-        const tooltip = document.createElement('div');
-        tooltip.className = 'block-id-tooltip';
-        tooltip.innerHTML = `
-            <div class="block-id-tooltip-title">References to ^${this.blockId}:</div>
-            <ul class="block-id-tooltip-list">
-                ${this.referencingFiles.map(f => `<li>${f}</li>`).join('')}
-            </ul>
-        `;
-        
-        const rect = target.getBoundingClientRect();
-        tooltip.style.left = `${rect.left}px`;
-        tooltip.style.top = `${rect.bottom + 4}px`;
-        
-        document.body.appendChild(tooltip);
-        this.tooltipEl = tooltip;
-    }
-    
-    hideTooltip() {
-        if (this.tooltipEl) {
-            this.tooltipEl.remove();
-            this.tooltipEl = null;
-        }
-    }
-    
-    eq(other: BlockIdCountWidget): boolean {
-        return other.blockId === this.blockId && 
-               other.count === this.count &&
-               other.referencingFiles.join(',') === this.referencingFiles.join(',');
+
+        // @ts-ignore - registerEditorExtension accepts Extension but types may be outdated
+        this.registerEditorExtension(blockIdPlugin);
     }
 }
