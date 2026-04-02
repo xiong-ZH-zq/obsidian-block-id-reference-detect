@@ -1,35 +1,26 @@
-# Remove Unused Block IDs
+# Block Reference Detect
 
-A plugin that removes unused block IDs and displays block reference counts with a Logseq-like experience.
+An Obsidian plugin that detects block ID references and displays reference counts with a Logseq-like experience.
 
 ## Features
 
-### Current Features
-- **Scan & Remove Unused Block IDs**: Scans all markdown files for unused block IDs (`^blockID`) and removes them after confirmation.
-- **Reference Detection**: Detects block ID references via `[[file#^blockID]]` syntax with optional pipe text.
+### Reference Count Display
+- Block IDs (`^blockID`) show a badge `[↩ N]` when they have N references
+- When cursor is on the line: shows the original block ID
+- When cursor is off the line: shows the reference count badge
 
-### TODO - New Features (Logseq-like Block Reference Display)
+### Real-time Updates
+- Reference counts update automatically when files are modified or deleted
+- Configurable debounce delay (default 50ms, set to 0 for instant updates)
 
-The following features are planned to be implemented to provide a Logseq-like experience:
+### Scan & Remove Unused Block IDs
+- Scan all markdown files for unused block IDs
+- Remove unused block IDs after confirmation
+- Supports excluded file extensions setting
 
-1. **Block Reference Count Display**
-   - Hide the actual block ID name from display
-   - Show a badge/box with the count of references (e.g., `[2]` for 2 references)
-   - Display format: A small box containing the reference count number
-
-2. **Hover with Ctrl to Show References**
-   - When user hovers over the block ID and holds `Ctrl`, show a tooltip/popover
-   - The tooltip displays a list of note names that reference this block
-   - List format: Show each referencing note's filename or display text
-
-3. **Cursor Line Behavior**
-   - When cursor is NOT on the line: Show the reference count badge `[N]`
-   - When cursor IS on the line: Show the original block ID name `^blockID`
-
-4. **Styling**
-   - Reference count should be styled as a subtle, inline badge
-   - Clean, minimal design that doesn't distract from content
-   - Hover tooltip should be non-intrusive and informative
+### Reference Detection
+- Detects block ID references via wikilink: `[[file#^blockID]]`
+- Detects block ID references via markdown link: `[text](file#^blockID)`
 
 ## Caution
 Consider backing up your vault before using this plugin to avoid any risk of data loss.
@@ -40,8 +31,13 @@ Consider backing up your vault before using this plugin to avoid any risk of dat
 ![Duplicate block ids](https://i.imgur.com/YVLT6zO.png)
 
 ## How to use?
-1. Open the command palette and run the command **Remove Unused Block IDs: Scan vault**.
-2. Confirm the deletion of unused block IDs.
+1. Open the command palette and run the command **Block Reference Detect: Scan vault**.
+2. Confirm the deletion of unused block IDs if needed.
+3. Configure debounce delay in settings if needed.
+
+## Settings
+- **Excluded file extensions**: Files with these extensions will be excluded from scanning (e.g., `.excalidraw.md`)
+- **Real-time update debounce**: Delay in milliseconds before updating reference counts after file changes (0 for instant)
 
 ## Author
 - xzqbear (https://www.xzqbear.com)

@@ -1,9 +1,9 @@
 {
-	"id": "remove-unused-block-ids",
-	"name": "Remove Unused Block IDs",
-	"version": "1.0.9",
+	"id": "block-reference-detect",
+	"name": "Block Reference Detect",
+	"version": "1.0.10",
 	"minAppVersion": "0.15.0",
-	"description": "An obsidian plugin that detect the block id usage in obsidian and show references when hover. (like in Logseq)",
+	"description": "An Obsidian plugin that detects block ID references and displays reference counts with a Logseq-like experience.",
 	"author": "xzqbear",
 	"authorUrl": "https://www.xzqbear.com",
 	"isDesktopOnly": false
