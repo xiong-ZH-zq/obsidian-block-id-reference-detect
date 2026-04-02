@@ -117,7 +117,7 @@ export default class UnusedBlockIdRemover extends Plugin {
                 visibility: hidden;
             }
             .cm-blockid-badge::before {
-                content: "[" attr(data-count) "]";
+                content: "[↩ " attr(data-count) "]";
                 visibility: visible;
                 font-size: 12px;
                 color: #0093ff;
