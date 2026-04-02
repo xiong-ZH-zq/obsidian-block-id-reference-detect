@@ -193,9 +193,19 @@ export default class UnusedBlockIdRemover extends Plugin {
             })
         );
 
+        this.registerEvent(
+            this.app.workspace.on('file-open', (file) => {
+                if (file instanceof TFile && file.extension === 'md') {
+                    this.app.vault.cachedRead(file).then((content) => {
+                        this.updateFileReferences(file, content);
+                    });
+                }
+            })
+        );
+
         this.registerBlockIdExtension();
 
-        this.scanVault();
+        await this.scanVault();
     }
 
     onunload() { }
