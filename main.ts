@@ -176,6 +176,8 @@ export default class UnusedBlockIdRemover extends Plugin {
     private lastHoveredBadgeFilePath: string | null = null;
     private refPopover: HTMLElement | null = null;
     private isPopoverHovered: boolean = false;
+    private popoverHoverHandlers: { enter: () => void; leave: () => void } | null = null;
+    private hoverTimeout: number | null = null;
 
     async onload() {
         await this.loadSettings();
@@ -239,6 +241,10 @@ export default class UnusedBlockIdRemover extends Plugin {
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
+                margin-top: 2px;
+            }
+            .block-id-ref-popover-item-preview:not(:first-child) {
+                margin-top: 4px;
             }
         `;
         document.head.appendChild(styleEl);
@@ -484,17 +490,17 @@ export default class UnusedBlockIdRemover extends Plugin {
             this.blockIdsByFile.delete(filePath);
         }
 
-        for (const [key, sources] of this.referenceSources.entries()) {
+        for (const [key, sources] of this.referenceSources) {
             if (sources.has(filePath)) {
                 sources.delete(filePath);
-                const refInfo = this.blockIdReferences.get(key);
-                if (refInfo) {
-                    refInfo.count = sources.size;
-                    refInfo.referencingFiles = Array.from(sources);
-                }
-                if (sources.size === 0) {
-                    this.referenceSources.delete(key);
-                }
+            }
+        }
+        
+        for (const [key, sources] of this.referenceSources) {
+            const refInfo = this.blockIdReferences.get(key);
+            if (refInfo) {
+                refInfo.referencingFiles = Array.from(sources);
+                refInfo.count = sources.size;
             }
         }
     }
@@ -595,6 +601,14 @@ export default class UnusedBlockIdRemover extends Plugin {
     async showReferencePopover(badgeEl: HTMLElement, filePath: string, blockId: string): Promise<void> {
         if (!this.refPopover) return;
         
+        this.isPopoverHovered = false;
+        this.hoverTimeout = null;
+        
+        if (this.popoverHoverHandlers) {
+            this.refPopover.removeEventListener('mouseenter', this.popoverHoverHandlers.enter);
+            this.refPopover.removeEventListener('mouseleave', this.popoverHoverHandlers.leave);
+        }
+        
         const key = `${filePath}#${blockId}`;
         const refInfo = this.blockIdReferences.get(key);
         
@@ -606,33 +620,51 @@ export default class UnusedBlockIdRemover extends Plugin {
                 </div>
             `;
         } else {
-            const itemsHtml = await Promise.all(refInfo.referencingFiles.map(async (refFile) => {
+            const uniqueFiles = [...new Set(refInfo.referencingFiles)];
+            const fileItems: { file: string; previews: string[] }[] = [];
+            let totalRefs = 0;
+            
+            for (const refFile of uniqueFiles) {
                 const file = this.app.vault.getAbstractFileByPath(refFile);
-                let preview = '';
-                if (file instanceof TFile) {
-                    const content = await this.app.vault.cachedRead(file);
-                    const lines = content.split('\n');
-                    const refRegex = new RegExp(`(\\[[^\\]]*\\]\\([^)]*#\\^${blockId}[^)]*\\)|\\[\\[.*#\\^${blockId}.*\\]\\])`);
-                    for (const line of lines) {
-                        if (refRegex.test(line)) {
-                            preview = line.trim();
-                            if (preview.length > 60) {
-                                preview = preview.substring(0, 60) + '...';
-                            }
-                            break;
+                if (!(file instanceof TFile)) continue;
+                
+                const content = await this.app.vault.cachedRead(file);
+                const lines = content.split('\n');
+                const refRegex = new RegExp(`(\\[[^\\]]*\\]\\([^)]*#\\^${blockId}[^)]*\\)|\\[\\[.*#\\^${blockId}.*\\]\\])`, 'g');
+                
+                const previews: string[] = [];
+                for (const line of lines) {
+                    refRegex.lastIndex = 0;
+                    if (refRegex.test(line)) {
+                        totalRefs++;
+                        let preview = line.trim();
+                        if (preview.length > 60) {
+                            preview = preview.substring(0, 60) + '...';
                         }
+                        previews.push(preview);
                     }
                 }
+                
+                if (previews.length > 0) {
+                    fileItems.push({ file: refFile, previews });
+                }
+            }
+            
+            const itemsHtml = fileItems.map(item => {
+                const previewHtml = item.previews.map((p, i) => 
+                    `<div class="block-id-ref-popover-item-preview">${p}</div>`
+                ).join('');
+                const countLabel = item.previews.length > 1 ? ` (${item.previews.length})` : '';
                 return `
-                    <div class="block-id-ref-popover-item" data-file="${refFile}">
-                        <div class="block-id-ref-popover-item-file">📄 ${refFile}</div>
-                        ${preview ? `<div class="block-id-ref-popover-item-preview">${preview}</div>` : ''}
+                    <div class="block-id-ref-popover-item" data-file="${item.file}">
+                        <div class="block-id-ref-popover-item-file">📄 ${item.file}${countLabel}</div>
+                        ${previewHtml}
                     </div>
                 `;
-            }));
+            });
             
             this.refPopover.innerHTML = `
-                <div class="block-id-ref-popover-header">References to ^${blockId} (${refInfo.referencingFiles.length})</div>
+                <div class="block-id-ref-popover-header">References to ^${blockId} (${totalRefs})</div>
                 ${itemsHtml.join('')}
             `;
             
@@ -643,7 +675,7 @@ export default class UnusedBlockIdRemover extends Plugin {
                     if (targetFile) {
                         const file = this.app.vault.getAbstractFileByPath(targetFile);
                         if (file instanceof TFile) {
-                            this.hideReferencePopover();
+                            this.hideReferencePopover(true);
                             const leaf = this.app.workspace.getLeaf();
                             await leaf.openFile(file);
                         }
@@ -671,19 +703,35 @@ export default class UnusedBlockIdRemover extends Plugin {
         this.refPopover.style.top = `${top}px`;
         this.refPopover.style.left = `${left}px`;
         
-        this.refPopover.addEventListener('mouseenter', () => {
-            this.isPopoverHovered = true;
-        });
-        this.refPopover.addEventListener('mouseleave', () => {
-            this.isPopoverHovered = false;
-            if (!this.hoverState.isCtrlPressed) {
-                this.hideReferencePopover();
+        this.popoverHoverHandlers = {
+            enter: () => { 
+                this.isPopoverHovered = true; 
+                if (this.hoverTimeout) {
+                    clearTimeout(this.hoverTimeout);
+                    this.hoverTimeout = null;
+                }
+            },
+            leave: () => {
+                this.isPopoverHovered = false;
+                if (!this.hoverState.isCtrlPressed) {
+                    this.hoverTimeout = window.setTimeout(() => {
+                        if (!this.isPopoverHovered) {
+                            this.hideReferencePopover();
+                        }
+                    }, 500);
+                }
             }
-        });
+        };
+        this.refPopover.addEventListener('mouseenter', this.popoverHoverHandlers.enter);
+        this.refPopover.addEventListener('mouseleave', this.popoverHoverHandlers.leave);
     }
 
     hideReferencePopover(force: boolean = false): void {
         if (this.refPopover && (!this.isPopoverHovered || force)) {
+            if (this.hoverTimeout) {
+                clearTimeout(this.hoverTimeout);
+                this.hoverTimeout = null;
+            }
             this.refPopover.style.display = 'none';
         }
     }
@@ -789,8 +837,12 @@ export default class UnusedBlockIdRemover extends Plugin {
                                 plugin.lastHoveredBadgeBlockId = null;
                                 plugin.lastHoveredBadgeFilePath = null;
                                 
-                                if (!movingToPopover) {
-                                    plugin.hideReferencePopover();
+                                if (!movingToPopover && !plugin.hoverState.isCtrlPressed) {
+                                    plugin.hoverTimeout = window.setTimeout(() => {
+                                        if (!plugin.isPopoverHovered) {
+                                            plugin.hideReferencePopover();
+                                        }
+                                    }, 500);
                                 }
                             });
                             
