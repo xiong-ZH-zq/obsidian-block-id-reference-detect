@@ -6,6 +6,14 @@ An Obsidian plugin that detects block ID references and displays reference count
 
 > The plugin will automatically scan the number of reference to the corresponding block and generate show block-id as `[↩ N]`.
 
+![Showcase2](./hover.png)
+
+> Give cross reference list when pressing `ctrl` and hovering on badge `[↩ N]`. Clicking list item will direct to the corresponding file.
+>
+> Clicking badge will show the search page of block id.
+
+
+
 ## Features
 
 ### Reference Count Display
