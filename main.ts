@@ -171,6 +171,10 @@ export default class UnusedBlockIdRemover extends Plugin {
     private hoveredBadgeEl: HTMLElement | null = null;
     private hoveredBadgeBlockId: string | null = null;
     private hoveredBadgeFilePath: string | null = null;
+    private lastHoveredBadgeEl: HTMLElement | null = null;
+    private lastHoveredBadgeBlockId: string | null = null;
+    private lastHoveredBadgeFilePath: string | null = null;
+    private refPopover: HTMLElement | null = null;
 
     async onload() {
         await this.loadSettings();
@@ -181,6 +185,7 @@ export default class UnusedBlockIdRemover extends Plugin {
             .cm-blockid-badge {
                 font-size: 12px;
                 color: #0093ff;
+                cursor: pointer;
             }
             .cm-blockid-hidden {
                 visibility: hidden;
@@ -188,25 +193,78 @@ export default class UnusedBlockIdRemover extends Plugin {
             .cm-activeLine .cm-blockid-hidden {
                 visibility: visible;
             }
+            .block-id-ref-popover {
+                position: fixed;
+                z-index: 1000;
+                background: var(--background-primary, #ffffff);
+                border: 1px solid var(--border-color, #ddd);
+                border-radius: 6px;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+                max-width: 350px;
+                min-width: 200px;
+                max-height: 300px;
+                overflow-y: auto;
+                font-size: 14px;
+                color: var(--text-primary, #333);
+            }
+            .block-id-ref-popover-header {
+                padding: 10px 12px;
+                border-bottom: 1px solid var(--border-color, #ddd);
+                font-weight: 600;
+                font-size: 13px;
+                color: var(--text-secondary, #666);
+                background: var(--background-secondary, #f5f5f5);
+                border-radius: 6px 6px 0 0;
+            }
+            .block-id-ref-popover-item {
+                padding: 8px 12px;
+                cursor: pointer;
+                border-bottom: 1px solid var(--border-color, #eee);
+            }
+            .block-id-ref-popover-item:last-child {
+                border-bottom: none;
+            }
+            .block-id-ref-popover-item:hover {
+                background: var(--interactive-hover, #e8e8e8);
+            }
+            .block-id-ref-popover-item-file {
+                font-weight: 500;
+                color: var(--text-primary, #333);
+                margin-bottom: 2px;
+            }
+            .block-id-ref-popover-item-preview {
+                font-size: 12px;
+                color: var(--text-secondary, #666);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
         `;
         document.head.appendChild(styleEl);
         this.register(() => styleEl.remove());
 
+        this.refPopover = document.createElement('div');
+        this.refPopover.className = 'block-id-ref-popover';
+        this.refPopover.style.display = 'none';
+        document.body.appendChild(this.refPopover);
+        const popoverEl = this.refPopover;
+        this.register(() => popoverEl.remove());
+
         this.registerDomEvent(document, 'keydown', (e: KeyboardEvent) => {
-            if (e.key === 'Control') {
+            if (e.key === 'Control' || e.ctrlKey) {
                 this.hoverState.isCtrlPressed = true;
-                if (this.hoveredBadgeEl && this.hoveredBadgeBlockId && this.hoveredBadgeFilePath && this.settings.ctrlHoverShowsReferences) {
-                    const tooltipText = this.getReferenceTooltipText(this.hoveredBadgeFilePath, this.hoveredBadgeBlockId);
-                    this.hoveredBadgeEl.setAttribute('title', tooltipText);
+                const badgeEl = this.hoveredBadgeEl || this.lastHoveredBadgeEl;
+                const badgeBlockId = this.hoveredBadgeBlockId || this.lastHoveredBadgeBlockId;
+                const badgeFilePath = this.hoveredBadgeFilePath || this.lastHoveredBadgeFilePath;
+                if (badgeEl && badgeBlockId && badgeFilePath && this.settings.ctrlHoverShowsReferences) {
+                    this.showReferencePopover(badgeEl, badgeFilePath, badgeBlockId);
                 }
             }
         });
         this.registerDomEvent(document, 'keyup', (e: KeyboardEvent) => {
-            if (e.key === 'Control') {
+            if (e.key === 'Control' || e.ctrlKey) {
                 this.hoverState.isCtrlPressed = false;
-                if (this.hoveredBadgeEl) {
-                    this.hoveredBadgeEl.removeAttribute('title');
-                }
+                this.hideReferencePopover();
             }
         });
 
@@ -527,6 +585,91 @@ export default class UnusedBlockIdRemover extends Plugin {
         return this.blockIdReferences;
     }
 
+    async showReferencePopover(badgeEl: HTMLElement, filePath: string, blockId: string): Promise<void> {
+        if (!this.refPopover) return;
+        
+        const key = `${filePath}#${blockId}`;
+        const refInfo = this.blockIdReferences.get(key);
+        
+        if (!refInfo || refInfo.referencingFiles.length === 0) {
+            this.refPopover.innerHTML = `
+                <div class="block-id-ref-popover-header">References to ^${blockId}</div>
+                <div class="block-id-ref-popover-item">
+                    <div class="block-id-ref-popover-item-preview">No references found</div>
+                </div>
+            `;
+        } else {
+            const itemsHtml = await Promise.all(refInfo.referencingFiles.map(async (refFile) => {
+                const file = this.app.vault.getAbstractFileByPath(refFile);
+                let preview = '';
+                if (file instanceof TFile) {
+                    const content = await this.app.vault.cachedRead(file);
+                    const lines = content.split('\n');
+                    const refRegex = new RegExp(`(\\[[^\\]]*\\]\\([^)]*#\\^${blockId}[^)]*\\)|\\[\\[.*#\\^${blockId}.*\\]\\])`);
+                    for (const line of lines) {
+                        if (refRegex.test(line)) {
+                            preview = line.trim();
+                            if (preview.length > 60) {
+                                preview = preview.substring(0, 60) + '...';
+                            }
+                            break;
+                        }
+                    }
+                }
+                return `
+                    <div class="block-id-ref-popover-item" data-file="${refFile}">
+                        <div class="block-id-ref-popover-item-file">📄 ${refFile}</div>
+                        ${preview ? `<div class="block-id-ref-popover-item-preview">${preview}</div>` : ''}
+                    </div>
+                `;
+            }));
+            
+            this.refPopover.innerHTML = `
+                <div class="block-id-ref-popover-header">References to ^${blockId} (${refInfo.referencingFiles.length})</div>
+                ${itemsHtml.join('')}
+            `;
+            
+            this.refPopover.querySelectorAll('.block-id-ref-popover-item').forEach((item) => {
+                item.addEventListener('click', async () => {
+                    const targetFile = item.getAttribute('data-file');
+                    if (targetFile) {
+                        const file = this.app.vault.getAbstractFileByPath(targetFile);
+                        if (file instanceof TFile) {
+                            this.hideReferencePopover();
+                            const leaf = this.app.workspace.getLeaf();
+                            await leaf.openFile(file);
+                        }
+                    }
+                });
+            });
+        }
+        
+        const rect = badgeEl.getBoundingClientRect();
+        let top = rect.bottom + 8;
+        let left = rect.left;
+        
+        this.refPopover.style.display = 'block';
+        
+        const popoverRect = this.refPopover.getBoundingClientRect();
+        if (left + popoverRect.width > window.innerWidth) {
+            left = window.innerWidth - popoverRect.width - 16;
+        }
+        if (top + popoverRect.height > window.innerHeight) {
+            top = rect.top - popoverRect.height - 8;
+        }
+        if (left < 8) left = 8;
+        if (top < 8) top = 8;
+        
+        this.refPopover.style.top = `${top}px`;
+        this.refPopover.style.left = `${left}px`;
+    }
+
+    hideReferencePopover(): void {
+        if (this.refPopover) {
+            this.refPopover.style.display = 'none';
+        }
+    }
+
     registerBlockIdExtension(): void {
         const plugin = this;
         const { ViewPlugin, Decoration, EditorView } = require('@codemirror/view');
@@ -599,18 +742,31 @@ export default class UnusedBlockIdRemover extends Plugin {
                                 plugin.hoveredBadgeEl = e.target as HTMLElement;
                                 plugin.hoveredBadgeBlockId = blockId;
                                 plugin.hoveredBadgeFilePath = filePath;
+                                plugin.lastHoveredBadgeEl = e.target as HTMLElement;
+                                plugin.lastHoveredBadgeBlockId = blockId;
+                                plugin.lastHoveredBadgeFilePath = filePath;
                                 if (plugin.settings.ctrlHoverShowsReferences && plugin.hoverState.isCtrlPressed) {
-                                    const tooltipText = plugin.getReferenceTooltipText(filePath, blockId);
-                                    (e.target as HTMLElement).setAttribute('title', tooltipText);
+                                    plugin.showReferencePopover(e.target as HTMLElement, filePath, blockId);
+                                }
+                            });
+                            
+                            badgeEl.addEventListener('mousemove', (e) => {
+                                if (plugin.settings.ctrlHoverShowsReferences) {
+                                    if (plugin.hoverState.isCtrlPressed) {
+                                        plugin.showReferencePopover(e.target as HTMLElement, filePath, blockId);
+                                    } else {
+                                        plugin.hideReferencePopover();
+                                    }
                                 }
                             });
                             
                             badgeEl.addEventListener('mouseleave', (e) => {
-                                console.log('[BlockRef] Badge mouseleave fired');
                                 plugin.hoveredBadgeEl = null;
                                 plugin.hoveredBadgeBlockId = null;
                                 plugin.hoveredBadgeFilePath = null;
-                                (e.target as HTMLElement).removeAttribute('title');
+                                if (!plugin.hoverState.isCtrlPressed) {
+                                    plugin.hideReferencePopover();
+                                }
                             });
                             
                             const badgeWidget = new class extends WidgetType {
