@@ -196,8 +196,8 @@ export default class UnusedBlockIdRemover extends Plugin {
             .block-id-ref-popover {
                 position: fixed;
                 z-index: 1000;
-                background: var(--background-primary, #ffffff);
-                border: 1px solid var(--border-color, #ddd);
+                background: var(--background-primary);
+                border: 1px solid var(--border-color);
                 border-radius: 6px;
                 box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
                 max-width: 350px;
@@ -205,36 +205,36 @@ export default class UnusedBlockIdRemover extends Plugin {
                 max-height: 300px;
                 overflow-y: auto;
                 font-size: 14px;
-                color: var(--text-primary, #333);
+                color: var(--text-primary);
             }
             .block-id-ref-popover-header {
                 padding: 10px 12px;
-                border-bottom: 1px solid var(--border-color, #ddd);
+                border-bottom: 1px solid var(--border-color);
                 font-weight: 600;
                 font-size: 13px;
-                color: var(--text-secondary, #666);
-                background: var(--background-secondary, #f5f5f5);
+                color: var(--text-secondary);
+                background: var(--background-secondary);
                 border-radius: 6px 6px 0 0;
             }
             .block-id-ref-popover-item {
                 padding: 8px 12px;
                 cursor: pointer;
-                border-bottom: 1px solid var(--border-color, #eee);
+                border-bottom: 1px solid var(--border-color);
             }
             .block-id-ref-popover-item:last-child {
                 border-bottom: none;
             }
             .block-id-ref-popover-item:hover {
-                background: var(--interactive-hover, #e8e8e8);
+                background: var(--interactive-hover);
             }
             .block-id-ref-popover-item-file {
                 font-weight: 500;
-                color: var(--text-primary, #333);
+                color: var(--text-primary);
                 margin-bottom: 2px;
             }
             .block-id-ref-popover-item-preview {
                 font-size: 12px;
-                color: var(--text-secondary, #666);
+                color: var(--text-secondary);
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
@@ -253,17 +253,23 @@ export default class UnusedBlockIdRemover extends Plugin {
         this.registerDomEvent(document, 'keydown', (e: KeyboardEvent) => {
             if (e.key === 'Control' || e.ctrlKey) {
                 this.hoverState.isCtrlPressed = true;
-                const badgeEl = this.hoveredBadgeEl || this.lastHoveredBadgeEl;
-                const badgeBlockId = this.hoveredBadgeBlockId || this.lastHoveredBadgeBlockId;
-                const badgeFilePath = this.hoveredBadgeFilePath || this.lastHoveredBadgeFilePath;
-                if (badgeEl && badgeBlockId && badgeFilePath && this.settings.ctrlHoverShowsReferences) {
-                    this.showReferencePopover(badgeEl, badgeFilePath, badgeBlockId);
+                if (this.hoveredBadgeEl && this.hoveredBadgeBlockId && this.hoveredBadgeFilePath && this.settings.ctrlHoverShowsReferences) {
+                    this.showReferencePopover(this.hoveredBadgeEl, this.hoveredBadgeFilePath, this.hoveredBadgeBlockId);
+                } else {
+                    this.hideReferencePopover();
                 }
             }
         });
         this.registerDomEvent(document, 'keyup', (e: KeyboardEvent) => {
             if (e.key === 'Control' || e.ctrlKey) {
                 this.hoverState.isCtrlPressed = false;
+                this.hideReferencePopover();
+            }
+        });
+
+        this.registerDomEvent(document, 'click', (e: MouseEvent) => {
+            const target = e.target as HTMLElement;
+            if (!target.closest('.block-id-ref-popover') && !target.closest('.cm-blockid-badge')) {
                 this.hideReferencePopover();
             }
         });
@@ -630,7 +636,8 @@ export default class UnusedBlockIdRemover extends Plugin {
             `;
             
             this.refPopover.querySelectorAll('.block-id-ref-popover-item').forEach((item) => {
-                item.addEventListener('click', async () => {
+                item.addEventListener('click', async (e) => {
+                    e.stopPropagation();
                     const targetFile = item.getAttribute('data-file');
                     if (targetFile) {
                         const file = this.app.vault.getAbstractFileByPath(targetFile);
@@ -764,9 +771,10 @@ export default class UnusedBlockIdRemover extends Plugin {
                                 plugin.hoveredBadgeEl = null;
                                 plugin.hoveredBadgeBlockId = null;
                                 plugin.hoveredBadgeFilePath = null;
-                                if (!plugin.hoverState.isCtrlPressed) {
-                                    plugin.hideReferencePopover();
-                                }
+                                plugin.lastHoveredBadgeEl = null;
+                                plugin.lastHoveredBadgeBlockId = null;
+                                plugin.lastHoveredBadgeFilePath = null;
+                                plugin.hideReferencePopover();
                             });
                             
                             const badgeWidget = new class extends WidgetType {
