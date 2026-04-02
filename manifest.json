@@ -3,7 +3,8 @@
 	"name": "Remove Unused Block IDs",
 	"version": "1.0.9",
 	"minAppVersion": "0.15.0",
-	"description": "Remove unused block ids in your vault.",
-	"author": "Daniel Geneta",
+	"description": "An obsidian plugin that detect the block id usage in obsidian and show references when hover. (like in Logseq)",
+	"author": "xzqbear",
+	"authorUrl": "https://www.xzqbear.com",
 	"isDesktopOnly": false
 }
