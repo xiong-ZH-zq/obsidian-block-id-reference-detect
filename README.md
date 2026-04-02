@@ -42,6 +42,8 @@ An Obsidian plugin that detects block ID references and displays reference count
 
 - **Excluded file extensions**: Files with these extensions will be excluded from scanning (e.g., `.excalidraw.md`)
 - **Real-time update debounce**: Delay in milliseconds before updating reference counts after file changes (0 for instant)
+- **Click badge to open search**: When enabled, clicking on a `[↩ N]` badge opens Obsidian's built-in search with the block ID as the query
+- **Ctrl+hover shows references**: When enabled, holding Ctrl and hovering over a `[↩ N]` badge shows a tooltip listing all files that reference this block ID
 
 ## Caution
 

@@ -1,5 +1,5 @@
 import { App, Plugin, TFile, Notice, Modal, Setting, PluginSettingTab } from 'obsidian';
-import { ViewPlugin, Decoration, EditorView, DecorationSet } from '@codemirror/view';
+import { ViewPlugin, Decoration, EditorView, DecorationSet, WidgetType } from '@codemirror/view';
 
 interface BlockIdInfo {
     id: string;
@@ -20,14 +20,24 @@ interface UnusedBlockId {
     lineNumber: number;
 }
 
+interface HoverState {
+    blockId: string | null;
+    filePath: string | null;
+    isCtrlPressed: boolean;
+}
+
 interface UnusedBlockIdRemoverSettings {
     excludedExtensions: string[];
     debounceDelay: number;
+    badgeClickOpensSearch: boolean;
+    ctrlHoverShowsReferences: boolean;
 }
 
 const DEFAULT_SETTINGS: Partial<UnusedBlockIdRemoverSettings> = {
     excludedExtensions: ['.excalidraw.md'],
-    debounceDelay: 50
+    debounceDelay: 50,
+    badgeClickOpensSearch: true,
+    ctrlHoverShowsReferences: true
 }
 
 class UnusedBlockIdRemoverSettingTab extends PluginSettingTab {
@@ -69,6 +79,32 @@ class UnusedBlockIdRemoverSettingTab extends PluginSettingTab {
                             this.plugin.settings.debounceDelay = delay;
                             await this.plugin.saveSettings();
                         }
+                    });
+            });
+
+        containerEl.createEl('h3', { text: 'Badge Behavior' });
+
+        new Setting(containerEl)
+            .setName('Click badge to open search')
+            .setDesc('When clicking on a [↩ N] badge, open Obsidian\'s built-in search with the block ID as the query.')
+            .addToggle((toggle) => {
+                toggle
+                    .setValue(this.plugin.settings.badgeClickOpensSearch)
+                    .onChange(async (value) => {
+                        this.plugin.settings.badgeClickOpensSearch = value;
+                        await this.plugin.saveSettings();
+                    });
+            });
+
+        new Setting(containerEl)
+            .setName('Ctrl+hover shows references')
+            .setDesc('When holding Ctrl and hovering over a [↩ N] badge, show a tooltip listing all files that reference this block ID.')
+            .addToggle((toggle) => {
+                toggle
+                    .setValue(this.plugin.settings.ctrlHoverShowsReferences)
+                    .onChange(async (value) => {
+                        this.plugin.settings.ctrlHoverShowsReferences = value;
+                        await this.plugin.saveSettings();
                     });
             });
     }
@@ -127,6 +163,14 @@ export default class UnusedBlockIdRemover extends Plugin {
     private blockIdsByFile: Map<string, Set<string>> = new Map();
     private referenceSources: Map<string, Set<string>> = new Map();
     private modifyDebounceTimer: number | null = null;
+    private hoverState: HoverState = {
+        blockId: null,
+        filePath: null,
+        isCtrlPressed: false
+    };
+    private hoveredBadgeEl: HTMLElement | null = null;
+    private hoveredBadgeBlockId: string | null = null;
+    private hoveredBadgeFilePath: string | null = null;
 
     async onload() {
         await this.loadSettings();
@@ -135,24 +179,36 @@ export default class UnusedBlockIdRemover extends Plugin {
         styleEl.id = 'block-id-ref-styles';
         styleEl.textContent = `
             .cm-blockid-badge {
-                visibility: hidden;
-            }
-            .cm-blockid-badge::before {
-                content: "[↩ " attr(data-count) "]";
-                visibility: visible;
                 font-size: 12px;
                 color: #0093ff;
             }
-            .cm-blockid-badge::first-letter {
-                visibility: visible;
-                opacity: 0.5;
+            .cm-blockid-hidden {
+                visibility: hidden;
             }
-            .cm-activeLine .cm-blockid-badge {
+            .cm-activeLine .cm-blockid-hidden {
                 visibility: visible;
             }
         `;
         document.head.appendChild(styleEl);
         this.register(() => styleEl.remove());
+
+        this.registerDomEvent(document, 'keydown', (e: KeyboardEvent) => {
+            if (e.key === 'Control') {
+                this.hoverState.isCtrlPressed = true;
+                if (this.hoveredBadgeEl && this.hoveredBadgeBlockId && this.hoveredBadgeFilePath && this.settings.ctrlHoverShowsReferences) {
+                    const tooltipText = this.getReferenceTooltipText(this.hoveredBadgeFilePath, this.hoveredBadgeBlockId);
+                    this.hoveredBadgeEl.setAttribute('title', tooltipText);
+                }
+            }
+        });
+        this.registerDomEvent(document, 'keyup', (e: KeyboardEvent) => {
+            if (e.key === 'Control') {
+                this.hoverState.isCtrlPressed = false;
+                if (this.hoveredBadgeEl) {
+                    this.hoveredBadgeEl.removeAttribute('title');
+                }
+            }
+        });
 
         this.addSettingTab(new UnusedBlockIdRemoverSettingTab(this.app, this));
 
@@ -442,6 +498,26 @@ export default class UnusedBlockIdRemover extends Plugin {
         }
     }
 
+    async openSearchWithBlockId(blockId: string): Promise<void> {
+        console.log('[BlockRef] openSearchWithBlockId called with:', blockId);
+        const leaf = this.app.workspace.getLeaf(true);
+        await leaf.setViewState({
+            type: "search",
+            state: { query: `^${blockId}` }
+        });
+        await this.app.workspace.revealLeaf(leaf);
+    }
+
+    getReferenceTooltipText(filePath: string, blockId: string): string {
+        const key = `${filePath}#${blockId}`;
+        const refInfo = this.blockIdReferences.get(key);
+        if (!refInfo || refInfo.referencingFiles.length === 0) {
+            return 'No references';
+        }
+        const filesList = refInfo.referencingFiles.map(f => `- ${f}`).join('\n');
+        return `References:\n${filesList}`;
+    }
+
     getBlockIdReference(filePath: string, blockId: string): BlockIdReference | undefined {
         const key = `${filePath}#${blockId}`;
         return this.blockIdReferences.get(key);
@@ -496,12 +572,66 @@ export default class UnusedBlockIdRemover extends Plugin {
                         const blockIdStart = line.to - match[0].length;
 
                         if (hasRefs && !isCursorOnLine) {
+                            console.log('[BlockRef] Creating badge decoration for blockId:', blockId, 'count:', refInfo.count);
+                            
+                            const badgeEl = document.createElement('span');
+                            badgeEl.className = 'cm-blockid-badge';
+                            badgeEl.textContent = `[↩ ${refInfo.count}]`;
+                            badgeEl.setAttribute('data-block-id', blockId);
+                            
+                            badgeEl.addEventListener('click', (e) => {
+                                console.log('[BlockRef] Badge click fired', {
+                                    blockId: blockId,
+                                    badgeClickOpensSearch: plugin.settings.badgeClickOpensSearch
+                                });
+                                e.preventDefault();
+                                if (plugin.settings.badgeClickOpensSearch) {
+                                    plugin.openSearchWithBlockId(blockId);
+                                }
+                            });
+                            
+                            badgeEl.addEventListener('mouseenter', (e) => {
+                                console.log('[BlockRef] Badge mouseenter fired', {
+                                    blockId: blockId,
+                                    ctrlHoverShowsReferences: plugin.settings.ctrlHoverShowsReferences,
+                                    isCtrlPressed: plugin.hoverState.isCtrlPressed
+                                });
+                                plugin.hoveredBadgeEl = e.target as HTMLElement;
+                                plugin.hoveredBadgeBlockId = blockId;
+                                plugin.hoveredBadgeFilePath = filePath;
+                                if (plugin.settings.ctrlHoverShowsReferences && plugin.hoverState.isCtrlPressed) {
+                                    const tooltipText = plugin.getReferenceTooltipText(filePath, blockId);
+                                    (e.target as HTMLElement).setAttribute('title', tooltipText);
+                                }
+                            });
+                            
+                            badgeEl.addEventListener('mouseleave', (e) => {
+                                console.log('[BlockRef] Badge mouseleave fired');
+                                plugin.hoveredBadgeEl = null;
+                                plugin.hoveredBadgeBlockId = null;
+                                plugin.hoveredBadgeFilePath = null;
+                                (e.target as HTMLElement).removeAttribute('title');
+                            });
+                            
+                            const badgeWidget = new class extends WidgetType {
+                                toDOM(): HTMLElement {
+                                    return badgeEl;
+                                }
+                                eq(): boolean {
+                                    return false;
+                                }
+                            };
+                            
+                            decorations.push(
+                                Decoration.widget({
+                                    widget: badgeWidget,
+                                    side: -1
+                                }).range(blockIdStart)
+                            );
+                            
                             decorations.push(
                                 Decoration.mark({
-                                    class: 'cm-blockid-badge',
-                                    attributes: {
-                                        'data-count': String(refInfo.count)
-                                    }
+                                    class: 'cm-blockid-hidden'
                                 }).range(blockIdStart, line.to)
                             );
                         }
