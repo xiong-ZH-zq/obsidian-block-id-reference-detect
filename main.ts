@@ -1,4 +1,17 @@
-import { App, Plugin, TFile, Notice, Modal, Setting, PluginSettingTab } from 'obsidian';
+import { App, Plugin, TFile, Notice, Modal, Setting, PluginSettingTab, Editor, EditorPosition } from 'obsidian';
+import { ViewPlugin, Decoration, EditorView, WidgetType } from '@codemirror/view';
+
+interface BlockIdInfo {
+    id: string;
+    file: string;
+    line: string;
+    lineNumber: number;
+}
+
+interface BlockIdReference {
+    count: number;
+    referencingFiles: string[];
+}
 
 interface UnusedBlockId {
     id: string;
@@ -14,6 +27,53 @@ interface UnusedBlockIdRemoverSettings {
 const DEFAULT_SETTINGS: Partial<UnusedBlockIdRemoverSettings> = {
     excludedExtensions: ['.excalidraw.md']
 }
+
+const BLOCK_ID_CSS = `
+.block-id-ref-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    margin-left: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+    background-color: var(--background-secondary);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+.block-id-ref-count:hover {
+    background-color: var(--background-modifier-hover);
+}
+.block-id-tooltip {
+    position: fixed;
+    padding: 8px 12px;
+    background-color: var(--background-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    font-size: 13px;
+    max-width: 300px;
+    z-index: 1000;
+}
+.block-id-tooltip-title {
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: var(--text-primary);
+}
+.block-id-tooltip-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+.block-id-tooltip-list li {
+    padding: 2px 0;
+    color: var(--text-secondary);
+}
+`;
 
 class UnusedBlockIdRemoverSettingTab extends PluginSettingTab {
     plugin: UnusedBlockIdRemover;
@@ -92,9 +152,15 @@ class ConfirmationModal extends Modal {
 
 export default class UnusedBlockIdRemover extends Plugin {
     settings: UnusedBlockIdRemoverSettings;
+    private blockIdReferences: Map<string, BlockIdReference> = new Map();
 
     async onload() {
         await this.loadSettings();
+
+        const styleEl = document.createElement('style');
+        styleEl.textContent = BLOCK_ID_CSS;
+        document.head.appendChild(styleEl);
+        this.register(() => styleEl.remove());
 
         this.addSettingTab(new UnusedBlockIdRemoverSettingTab(this.app, this));
 
@@ -103,6 +169,8 @@ export default class UnusedBlockIdRemover extends Plugin {
             name: 'Scan vault',
             callback: () => this.findUnusedBlockIds(),
         });
+
+        this.registerEditorExtension();
     }
 
     onunload() { }
@@ -128,10 +196,10 @@ export default class UnusedBlockIdRemover extends Plugin {
                 return excludedExtensions.length === 0 || !excludedExtensions.some(ext => file.path.endsWith(ext));
             });
 
-            // Map to store block IDs, now keyed by both file path and block ID
-            const blockIds = new Map<string, UnusedBlockId[]>();
-            // Set to store block ID references, now using file path + block ID as key
-            const blockIdReferences = new Set<string>();
+            // Map to store block IDs, keyed by file path + block ID
+            const blockIds = new Map<string, BlockIdInfo[]>();
+            // Map to store block ID reference counts and referencing files
+            const blockIdReferences = new Map<string, BlockIdReference>();
 
             // Collect block IDs and references
             for (const file of files) {
@@ -147,6 +215,9 @@ export default class UnusedBlockIdRemover extends Plugin {
                         return !blockIdReferences.has(referenceKey);
                     });
                 });
+            
+            // Store block ID references for display purposes
+            this.blockIdReferences = blockIdReferences;
 
             loadingNotice.hide();
 
@@ -166,8 +237,8 @@ export default class UnusedBlockIdRemover extends Plugin {
     collectBlockIdsAndReferences(
         content: string,
         filePath: string,
-        blockIds: Map<string, UnusedBlockId[]>,
-        blockIdReferences: Set<string>
+        blockIds: Map<string, BlockIdInfo[]>,
+        blockIdReferences: Map<string, BlockIdReference>
     ) {
         const lines = content.split('\n');
         const blockIdRegex = /(?:\s|^)\^([\w-]+)$/;  // Matches block IDs like ^blockID
@@ -200,7 +271,16 @@ export default class UnusedBlockIdRemover extends Plugin {
                 const refFilePath = this.app.metadataCache.getFirstLinkpathDest(refMatch[1], filePath)?.path;  // Resolve the full path for the referenced file
                 if (refFilePath) {
                     const blockRefKey = `${refFilePath}#${refMatch[2]}`;  // Create a unique key for the reference
-                    blockIdReferences.add(blockRefKey);  // Add reference with full file path and block ID
+                    const existing = blockIdReferences.get(blockRefKey);
+                    if (existing) {
+                        existing.count++;
+                        existing.referencingFiles.push(filePath);
+                    } else {
+                        blockIdReferences.set(blockRefKey, {
+                            count: 1,
+                            referencingFiles: [filePath]
+                        });
+                    }
                 }
             }
         });
@@ -267,5 +347,159 @@ export default class UnusedBlockIdRemover extends Plugin {
                 eState: { line: lineNumber }
             });
         }
+    }
+
+    getBlockIdReference(filePath: string, blockId: string): BlockIdReference | undefined {
+        const key = `${filePath}#${blockId}`;
+        return this.blockIdReferences.get(key);
+    }
+
+    getAllBlockIdReferences(): Map<string, BlockIdReference> {
+        return this.blockIdReferences;
+    }
+
+    registerEditorExtension(): void {
+        // @ts-ignore - registerEditorExtension accepts Extension but types may be outdated
+        this.registerEditorExtension(createBlockIdExtension(this));
+    }
+}
+
+function createBlockIdExtension(plugin: UnusedBlockIdRemover) {
+    const blockIdRegex = /(?:\s|^)\^([\w-]+)$/g;
+    
+    return ViewPlugin.fromClass(class {
+        decorations: any;
+        view: EditorView;
+        
+        constructor(view: EditorView) {
+            this.view = view;
+            this.decorations = this.buildDecorations();
+        }
+        
+        update() {
+            this.decorations = this.buildDecorations();
+        }
+        
+        buildDecorations() {
+            const decorations: any[] = [];
+            const currentFile = plugin.app.workspace.getActiveFile();
+            if (!currentFile) return Decoration.none;
+            
+            const filePath = currentFile.path;
+            const doc = this.view.state.doc;
+            const cursorPos = this.view.state.selection.main.head;
+            
+            for (let i = 1; i <= doc.lines; i++) {
+                const line = doc.line(i);
+                const lineText = line.text;
+                
+                blockIdRegex.lastIndex = 0;
+                const match = blockIdRegex.exec(lineText);
+                
+                if (match) {
+                    const blockId = match[1];
+                    const refInfo = plugin.getBlockIdReference(filePath, blockId);
+                    const isCursorOnLine = line.from <= cursorPos && cursorPos <= line.to;
+                    
+                    if (refInfo && refInfo.count > 0 && !isCursorOnLine) {
+                        const widget = new BlockIdCountWidget(
+                            blockId,
+                            refInfo.count,
+                            refInfo.referencingFiles,
+                            plugin
+                        );
+                        decorations.push(Decoration.widget({
+                            widget,
+                            side: 1
+                        }).range(line.to));
+                    }
+                }
+            }
+            
+            return Decoration.set(decorations);
+        }
+    }, {
+        decorations: v => v.decorations
+    });
+}
+
+class BlockIdCountWidget extends WidgetType {
+    blockId: string;
+    count: number;
+    referencingFiles: string[];
+    plugin: UnusedBlockIdRemover;
+    
+    constructor(blockId: string, count: number, referencingFiles: string[], plugin: UnusedBlockIdRemover) {
+        super();
+        this.blockId = blockId;
+        this.count = count;
+        this.referencingFiles = referencingFiles;
+        this.plugin = plugin;
+    }
+    
+    toDOM(): HTMLElement {
+        const container = document.createElement('span');
+        container.className = 'block-id-container has-refs';
+        
+        const countBox = document.createElement('span');
+        countBox.className = 'block-id-ref-count';
+        countBox.textContent = String(this.count);
+        countBox.setAttribute('data-block-id', this.blockId);
+        countBox.setAttribute('data-files', this.referencingFiles.join(','));
+        
+        countBox.addEventListener('mouseenter', (e) => {
+            if (e.ctrlKey) {
+                this.showTooltip(e.target as HTMLElement);
+            }
+        });
+        
+        countBox.addEventListener('mouseleave', () => {
+            this.hideTooltip();
+        });
+        
+        countBox.addEventListener('click', (e) => {
+            if (e.ctrlKey) {
+                e.preventDefault();
+                this.showTooltip(e.target as HTMLElement);
+            }
+        });
+        
+        container.appendChild(countBox);
+        return container;
+    }
+    
+    private tooltipEl: HTMLElement | null = null;
+    
+    showTooltip(target: HTMLElement) {
+        this.hideTooltip();
+        
+        const tooltip = document.createElement('div');
+        tooltip.className = 'block-id-tooltip';
+        tooltip.innerHTML = `
+            <div class="block-id-tooltip-title">References to ^${this.blockId}:</div>
+            <ul class="block-id-tooltip-list">
+                ${this.referencingFiles.map(f => `<li>${f}</li>`).join('')}
+            </ul>
+        `;
+        
+        const rect = target.getBoundingClientRect();
+        tooltip.style.left = `${rect.left}px`;
+        tooltip.style.top = `${rect.bottom + 4}px`;
+        
+        document.body.appendChild(tooltip);
+        this.tooltipEl = tooltip;
+    }
+    
+    hideTooltip() {
+        if (this.tooltipEl) {
+            this.tooltipEl.remove();
+            this.tooltipEl = null;
+        }
+    }
+    
+    eq(other: BlockIdCountWidget): boolean {
+        return other.blockId === this.blockId && 
+               other.count === this.count &&
+               other.referencingFiles.join(',') === this.referencingFiles.join(',');
     }
 }

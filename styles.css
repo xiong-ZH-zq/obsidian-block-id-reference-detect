@@ -1,0 +1,73 @@
+.block-id-ref-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    margin-left: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+    background-color: var(--background-secondary);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.block-id-ref-count:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.block-id-tooltip {
+    position: fixed;
+    padding: 8px 12px;
+    background-color: var(--background-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    font-size: 13px;
+    max-width: 300px;
+    z-index: 1000;
+}
+
+.block-id-tooltip-title {
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: var(--text-primary);
+}
+
+.block-id-tooltip-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.block-id-tooltip-list li {
+    padding: 2px 0;
+    color: var(--text-secondary);
+}
+
+.block-id-container {
+    display: inline;
+}
+
+.block-id-container.has-refs .block-id-name {
+    display: none;
+}
+
+.block-id-container.has-refs .block-id-ref-count {
+    display: inline-flex;
+}
+
+.block-id-container:not(.has-refs) .block-id-ref-count {
+    display: none;
+}
+
+.block-id-container.cursor-on-line .block-id-name {
+    display: inline;
+}
+
+.block-id-container.cursor-on-line .block-id-ref-count {
+    display: none;
+}
