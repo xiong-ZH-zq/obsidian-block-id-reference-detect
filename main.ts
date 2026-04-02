@@ -175,6 +175,7 @@ export default class UnusedBlockIdRemover extends Plugin {
     private lastHoveredBadgeBlockId: string | null = null;
     private lastHoveredBadgeFilePath: string | null = null;
     private refPopover: HTMLElement | null = null;
+    private isPopoverHovered: boolean = false;
 
     async onload() {
         await this.loadSettings();
@@ -263,14 +264,14 @@ export default class UnusedBlockIdRemover extends Plugin {
         this.registerDomEvent(document, 'keyup', (e: KeyboardEvent) => {
             if (e.key === 'Control' || e.ctrlKey) {
                 this.hoverState.isCtrlPressed = false;
-                this.hideReferencePopover();
+                this.hideReferencePopover(true);
             }
         });
 
         this.registerDomEvent(document, 'click', (e: MouseEvent) => {
             const target = e.target as HTMLElement;
             if (!target.closest('.block-id-ref-popover') && !target.closest('.cm-blockid-badge')) {
-                this.hideReferencePopover();
+                this.hideReferencePopover(true);
             }
         });
 
@@ -669,10 +670,20 @@ export default class UnusedBlockIdRemover extends Plugin {
         
         this.refPopover.style.top = `${top}px`;
         this.refPopover.style.left = `${left}px`;
+        
+        this.refPopover.addEventListener('mouseenter', () => {
+            this.isPopoverHovered = true;
+        });
+        this.refPopover.addEventListener('mouseleave', () => {
+            this.isPopoverHovered = false;
+            if (!this.hoverState.isCtrlPressed) {
+                this.hideReferencePopover();
+            }
+        });
     }
 
-    hideReferencePopover(): void {
-        if (this.refPopover) {
+    hideReferencePopover(force: boolean = false): void {
+        if (this.refPopover && (!this.isPopoverHovered || force)) {
             this.refPopover.style.display = 'none';
         }
     }
@@ -768,13 +779,19 @@ export default class UnusedBlockIdRemover extends Plugin {
                             });
                             
                             badgeEl.addEventListener('mouseleave', (e) => {
+                                const relatedTarget = e.relatedTarget as HTMLElement | null;
+                                const movingToPopover = relatedTarget && relatedTarget.closest('.block-id-ref-popover');
+                                
                                 plugin.hoveredBadgeEl = null;
                                 plugin.hoveredBadgeBlockId = null;
                                 plugin.hoveredBadgeFilePath = null;
                                 plugin.lastHoveredBadgeEl = null;
                                 plugin.lastHoveredBadgeBlockId = null;
                                 plugin.lastHoveredBadgeFilePath = null;
-                                plugin.hideReferencePopover();
+                                
+                                if (!movingToPopover) {
+                                    plugin.hideReferencePopover();
+                                }
                             });
                             
                             const badgeWidget = new class extends WidgetType {
