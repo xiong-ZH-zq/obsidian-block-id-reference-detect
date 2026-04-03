@@ -13,6 +13,27 @@ An Obsidian plugin that detects block ID references and displays reference count
 > Clicking badge will show the search page of block id.
 
 
+## How to Install
+
+### By BRAT
+
+- Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from Obsidian community plugin market.
+- Add beta plugin by repository url: `https://github.com/xiong-ZH-zq/obsidian-block-id-reference-detect`.
+- See "Block Reference Detect" in your plugin list!
+
+### By git and npm
+
+
+
+- Git clone this repo in your `.obsidian/plugins` path.
+
+```shell
+git clone https://github.com/xiong-ZH-zq/obsidian-block-id-reference-detect.git
+```
+
+- Run `npm run build` in `.obsidian/plugins` path.
+- Then you can see "Block Reference Detect" in your plugin list!
+
 
 ## Features
 
