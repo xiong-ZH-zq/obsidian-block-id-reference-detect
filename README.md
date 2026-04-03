@@ -66,8 +66,4 @@ Consider backing up your vault before using this plugin to avoid any risk of dat
 
 ## Acknowledgments
 
-Thank you to [isdmg](https://github.com/isdmg) for the inspiration and showcase.
-
-## Author
-
-- xzqbear (https://www.xzqbear.com)
+Thank you to [isdmg](https://github.com/isdmg) for the inspiration and showcase. Forked from isdmg/obsidian-remove-unused-block-ids under MIT License.
